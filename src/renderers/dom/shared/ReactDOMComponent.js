@@ -19,13 +19,9 @@ var DOMLazyTree = require('DOMLazyTree');
 var DOMNamespaces = require('DOMNamespaces');
 var DOMProperty = require('DOMProperty');
 var DOMPropertyOperations = require('DOMPropertyOperations');
-var EventConstants = require('EventConstants');
 var EventPluginHub = require('EventPluginHub');
 var EventPluginRegistry = require('EventPluginRegistry');
 var ReactBrowserEventEmitter = require('ReactBrowserEventEmitter');
-var ReactComponentBrowserEnvironment =
-  require('ReactComponentBrowserEnvironment');
-var ReactDOMButton = require('ReactDOMButton');
 var ReactDOMComponentFlags = require('ReactDOMComponentFlags');
 var ReactDOMComponentTree = require('ReactDOMComponentTree');
 var ReactDOMInput = require('ReactDOMInput');
@@ -40,7 +36,6 @@ var emptyFunction = require('emptyFunction');
 var escapeTextContentForBrowser = require('escapeTextContentForBrowser');
 var invariant = require('invariant');
 var isEventSupported = require('isEventSupported');
-var keyOf = require('keyOf');
 var shallowEqual = require('shallowEqual');
 var inputValueTracking = require('inputValueTracking');
 var validateDOMNesting = require('validateDOMNesting');
@@ -55,8 +50,8 @@ var registrationNameModules = EventPluginRegistry.registrationNameModules;
 // For quickly matching children type, to test if can be treated as content.
 var CONTENT_TYPES = {'string': true, 'number': true};
 
-var STYLE = keyOf({style: null});
-var HTML = keyOf({__html: null});
+var STYLE = 'style';
+var HTML = '__html';
 var RESERVED_PROPS = {
   children: null,
   dangerouslySetInnerHTML: null,
@@ -256,12 +251,13 @@ function optionPostMount() {
   ReactDOMOption.postMountWrapper(inst);
 }
 
-var setContentChildForInstrumentation = emptyFunction;
+var setAndValidateContentChildDev = emptyFunction;
 if (__DEV__) {
-  setContentChildForInstrumentation = function(content) {
+  setAndValidateContentChildDev = function(content) {
     var hasExistingContent = this._contentDebugID != null;
     var debugID = this._debugID;
-    var contentDebugID = debugID + '#text';
+    // This ID represents the inlined child that has no backing instance:
+    var contentDebugID = -debugID;
 
     if (content == null) {
       if (hasExistingContent) {
@@ -271,18 +267,13 @@ if (__DEV__) {
       return;
     }
 
+    validateDOMNesting(null, String(content), this, this._ancestorInfo);
     this._contentDebugID = contentDebugID;
-    var text = '' + content;
-
-    ReactInstrumentation.debugTool.onSetDisplayName(contentDebugID, '#text');
-    ReactInstrumentation.debugTool.onSetParent(contentDebugID, debugID);
-    ReactInstrumentation.debugTool.onSetText(contentDebugID, text);
-
     if (hasExistingContent) {
       ReactInstrumentation.debugTool.onBeforeUpdateComponent(contentDebugID, content);
       ReactInstrumentation.debugTool.onUpdateComponent(contentDebugID);
     } else {
-      ReactInstrumentation.debugTool.onBeforeMountComponent(contentDebugID, content);
+      ReactInstrumentation.debugTool.onBeforeMountComponent(contentDebugID, content, debugID);
       ReactInstrumentation.debugTool.onMountComponent(contentDebugID);
       ReactInstrumentation.debugTool.onSetChildren(debugID, [contentDebugID]);
     }
@@ -337,7 +328,7 @@ function trapBubbledEventsLocal() {
     case 'object':
       inst._wrapperState.listeners = [
         ReactBrowserEventEmitter.trapBubbledEvent(
-          EventConstants.topLevelTypes.topLoad,
+          'topLoad',
           'load',
           node
         ),
@@ -352,7 +343,7 @@ function trapBubbledEventsLocal() {
         if (mediaEvents.hasOwnProperty(event)) {
           inst._wrapperState.listeners.push(
             ReactBrowserEventEmitter.trapBubbledEvent(
-              EventConstants.topLevelTypes[event],
+              event,
               mediaEvents[event],
               node
             )
@@ -363,7 +354,7 @@ function trapBubbledEventsLocal() {
     case 'source':
       inst._wrapperState.listeners = [
         ReactBrowserEventEmitter.trapBubbledEvent(
-          EventConstants.topLevelTypes.topError,
+          'topError',
           'error',
           node
         ),
@@ -372,12 +363,12 @@ function trapBubbledEventsLocal() {
     case 'img':
       inst._wrapperState.listeners = [
         ReactBrowserEventEmitter.trapBubbledEvent(
-          EventConstants.topLevelTypes.topError,
+          'topError',
           'error',
           node
         ),
         ReactBrowserEventEmitter.trapBubbledEvent(
-          EventConstants.topLevelTypes.topLoad,
+          'topLoad',
           'load',
           node
         ),
@@ -386,12 +377,12 @@ function trapBubbledEventsLocal() {
     case 'form':
       inst._wrapperState.listeners = [
         ReactBrowserEventEmitter.trapBubbledEvent(
-          EventConstants.topLevelTypes.topReset,
+          'topReset',
           'reset',
           node
         ),
         ReactBrowserEventEmitter.trapBubbledEvent(
-          EventConstants.topLevelTypes.topSubmit,
+          'topSubmit',
           'submit',
           node
         ),
@@ -402,7 +393,7 @@ function trapBubbledEventsLocal() {
     case 'textarea':
       inst._wrapperState.listeners = [
         ReactBrowserEventEmitter.trapBubbledEvent(
-          EventConstants.topLevelTypes.topInvalid,
+          'topInvalid',
           'invalid',
           node
         ),
@@ -496,15 +487,15 @@ function ReactDOMComponent(element) {
   this._previousStyleCopy = null;
   this._hostNode = null;
   this._hostParent = null;
-  this._rootNodeID = null;
-  this._domID = null;
+  this._rootNodeID = 0;
+  this._domID = 0;
   this._hostContainerInfo = null;
   this._wrapperState = null;
   this._topLevelWrapper = null;
   this._flags = 0;
   if (__DEV__) {
     this._ancestorInfo = null;
-    setContentChildForInstrumentation.call(this, null);
+    setAndValidateContentChildDev.call(this, null);
   }
 }
 
@@ -518,7 +509,7 @@ ReactDOMComponent.Mixin = {
    *
    * @internal
    * @param {ReactReconcileTransaction|ReactServerRenderingTransaction} transaction
-   * @param {?ReactDOMComponent} the containing DOM component instance
+   * @param {?ReactDOMComponent} the parent component instance
    * @param {?object} info about the host container
    * @param {object} context
    * @return {string} The computed markup.
@@ -549,9 +540,6 @@ ReactDOMComponent.Mixin = {
           listeners: null,
         };
         transaction.getReactMountReady().enqueue(trapBubbledEventsLocal, this);
-        break;
-      case 'button':
-        props = ReactDOMButton.getHostProps(this, props, hostParent);
         break;
       case 'input':
         ReactDOMInput.mountWrapper(this, props, hostParent);
@@ -612,7 +600,7 @@ ReactDOMComponent.Mixin = {
       if (parentInfo) {
         // parentInfo should always be present except for the top-level
         // component when server rendering
-        validateDOMNesting(this._tag, this, parentInfo);
+        validateDOMNesting(this._tag, null, this, parentInfo);
       }
       this._ancestorInfo =
         validateDOMNesting.updatedAncestorInfo(parentInfo, this._tag, this);
@@ -713,13 +701,6 @@ ReactDOMComponent.Mixin = {
         break;
     }
 
-    if (__DEV__) {
-      if (this._debugID) {
-        var callback = () => ReactInstrumentation.debugTool.onComponentHasMounted(this._debugID);
-        transaction.getReactMountReady().enqueue(callback, this);
-      }
-    }
-
     return mountImage;
   },
 
@@ -815,7 +796,7 @@ ReactDOMComponent.Mixin = {
         // TODO: Validate that text is allowed as a child of this node
         ret = escapeTextContentForBrowser(contentToUse);
         if (__DEV__) {
-          setContentChildForInstrumentation.call(this, contentToUse);
+          setAndValidateContentChildDev.call(this, contentToUse);
         }
       } else if (childrenToUse != null) {
         var mountImages = this.mountChildren(
@@ -857,7 +838,7 @@ ReactDOMComponent.Mixin = {
       if (contentToUse != null) {
         // TODO: Validate that text is allowed as a child of this node
         if (__DEV__) {
-          setContentChildForInstrumentation.call(this, contentToUse);
+          setAndValidateContentChildDev.call(this, contentToUse);
         }
         DOMLazyTree.queueText(lazyTree, contentToUse);
       } else if (childrenToUse != null) {
@@ -902,12 +883,7 @@ ReactDOMComponent.Mixin = {
     var nextProps = this._currentElement.props;
 
     switch (this._tag) {
-      case 'button':
-        lastProps = ReactDOMButton.getHostProps(this, lastProps);
-        nextProps = ReactDOMButton.getHostProps(this, nextProps);
-        break;
       case 'input':
-        ReactDOMInput.updateWrapper(this);
         lastProps = ReactDOMInput.getHostProps(this, lastProps);
         nextProps = ReactDOMInput.getHostProps(this, nextProps);
         break;
@@ -920,7 +896,6 @@ ReactDOMComponent.Mixin = {
         nextProps = ReactDOMSelect.getHostProps(this, nextProps);
         break;
       case 'textarea':
-        ReactDOMTextarea.updateWrapper(this);
         lastProps = ReactDOMTextarea.getHostProps(this, lastProps);
         nextProps = ReactDOMTextarea.getHostProps(this, nextProps);
         break;
@@ -935,17 +910,21 @@ ReactDOMComponent.Mixin = {
       context
     );
 
-    if (this._tag === 'select') {
-      // <select> value update needs to occur after <option> children
-      // reconciliation
-      transaction.getReactMountReady().enqueue(postUpdateSelectWrapper, this);
-    }
-
-    if (__DEV__) {
-      if (this._debugID) {
-        var callback = () => ReactInstrumentation.debugTool.onComponentHasUpdated(this._debugID);
-        transaction.getReactMountReady().enqueue(callback, this);
-      }
+    switch (this._tag) {
+      case 'input':
+        // Update the wrapper around inputs *after* updating props. This has to
+        // happen after `_updateDOMProperties`. Otherwise HTML5 input validations
+        // raise warnings and prevent the new value from being assigned.
+        ReactDOMInput.updateWrapper(this);
+        break;
+      case 'textarea':
+        ReactDOMTextarea.updateWrapper(this);
+        break;
+      case 'select':
+        // <select> value update needs to occur after <option> children
+        // reconciliation
+        transaction.getReactMountReady().enqueue(postUpdateSelectWrapper, this);
+        break;
     }
   },
 
@@ -1129,7 +1108,7 @@ ReactDOMComponent.Mixin = {
       if (lastContent !== nextContent) {
         this.updateTextContent('' + nextContent);
         if (__DEV__) {
-          setContentChildForInstrumentation.call(this, nextContent);
+          setAndValidateContentChildDev.call(this, nextContent);
         }
       }
     } else if (nextHtml != null) {
@@ -1141,7 +1120,7 @@ ReactDOMComponent.Mixin = {
       }
     } else if (nextChildren != null) {
       if (__DEV__) {
-        setContentChildForInstrumentation.call(this, null);
+        setAndValidateContentChildDev.call(this, null);
       }
 
       this.updateChildren(nextChildren, transaction, context);
@@ -1203,13 +1182,12 @@ ReactDOMComponent.Mixin = {
     this.unmountChildren(safely);
     ReactDOMComponentTree.uncacheNode(this);
     EventPluginHub.deleteAllListeners(this);
-    ReactComponentBrowserEnvironment.unmountIDFromEnvironment(this._rootNodeID);
-    this._rootNodeID = null;
-    this._domID = null;
+    this._rootNodeID = 0;
+    this._domID = 0;
     this._wrapperState = null;
 
     if (__DEV__) {
-      setContentChildForInstrumentation.call(this, null);
+      setAndValidateContentChildDev.call(this, null);
     }
   },
 
@@ -1222,7 +1200,7 @@ ReactDOMComponent.Mixin = {
 Object.assign(
   ReactDOMComponent.prototype,
   ReactDOMComponent.Mixin,
-  ReactMultiChild.Mixin
+  ReactMultiChild
 );
 
 module.exports = ReactDOMComponent;

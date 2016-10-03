@@ -19,19 +19,38 @@ var shouldUpdateReactComponent = require('shouldUpdateReactComponent');
 var traverseAllChildren = require('traverseAllChildren');
 var warning = require('warning');
 
+var ReactComponentTreeHook;
+
+if (
+  typeof process !== 'undefined' &&
+  process.env &&
+  process.env.NODE_ENV === 'test'
+) {
+  // Temporary hack.
+  // Inline requires don't work well with Jest:
+  // https://github.com/facebook/react/issues/7240
+  // Remove the inline requires when we don't need them anymore:
+  // https://github.com/facebook/react/pull/7178
+  ReactComponentTreeHook = require('ReactComponentTreeHook');
+}
+
 function instantiateChild(childInstances, child, name, selfDebugID) {
   // We found a component instance.
   var keyUnique = (childInstances[name] === undefined);
   if (__DEV__) {
-    var ReactComponentTreeDevtool = require('ReactComponentTreeDevtool');
-    warning(
-      keyUnique,
-      'flattenChildren(...): Encountered two children with the same key, ' +
-      '`%s`. Child keys must be unique; when two children share a key, only ' +
-      'the first child will be used.%s',
-      KeyEscapeUtils.unescape(name),
-      ReactComponentTreeDevtool.getStackAddendumByID(selfDebugID)
-    );
+    if (!ReactComponentTreeHook) {
+      ReactComponentTreeHook = require('ReactComponentTreeHook');
+    }
+    if (!keyUnique) {
+      warning(
+        false,
+        'flattenChildren(...): Encountered two children with the same key, ' +
+        '`%s`. Child keys must be unique; when two children share a key, only ' +
+        'the first child will be used.%s',
+        KeyEscapeUtils.unescape(name),
+        ReactComponentTreeHook.getStackAddendumByID(selfDebugID)
+      );
+    }
   }
   if (child != null && keyUnique) {
     childInstances[name] = instantiateReactComponent(child, true);
@@ -56,7 +75,7 @@ var ReactChildReconciler = {
     nestedChildNodes,
     transaction,
     context,
-    selfDebugID // __DEV__ only
+    selfDebugID // 0 in production and for roots
   ) {
     if (nestedChildNodes == null) {
       return null;
@@ -98,7 +117,9 @@ var ReactChildReconciler = {
     transaction,
     hostParent,
     hostContainerInfo,
-    context) {
+    context,
+    selfDebugID // 0 in production and for roots
+  ) {
     // We currently don't have a way to track moves here but if we use iterators
     // instead of for..in we can zip the iterators and check if an item has
     // moved.
@@ -137,7 +158,8 @@ var ReactChildReconciler = {
           transaction,
           hostParent,
           hostContainerInfo,
-          context
+          context,
+          selfDebugID
         );
         mountImages.push(nextChildMountImage);
       }
